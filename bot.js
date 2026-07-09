@@ -1,13 +1,15 @@
 // Unified Premium Bot with Redis Database and NowPayments API Integration
 // Combines elitepay.js commands with testbot.js API invoicing
 
-const TelegramBot  = require('node-telegram-bot-api');
-const Redis = require('ioredis');
+const TelegramBot = require('node-telegram-bot-api');
+const { Redis } = require('@upstash/redis');
 const path = require('path');
 const fs = require('fs');
-const { configDotenv } = require('dotenv');
-require('dotenv').config();
+const dotenv = require('dotenv');
+dotenv.config(); // Fixed: Correct way to load dotenv
+
 console.clear();
+
 // ============================================
 // CONFIGURATION
 // ============================================
@@ -15,15 +17,15 @@ const CONFIG = {
     TELEGRAM_TOKEN: process.env.TELEGRAM_TOKEN,
     BOT_NAME: process.env.BOT_NAME,
     NOWPAYMENTS_API_KEY: process.env.NOWPAYMENTS_API_KEY,
-    WEBHOOK_URL: process.env.WEBHOOK_URL || 'https://curveradarhook.vercel.app/webhook',
+    WEBHOOK_URL: process.env.WEBHOOK_NOW_URL || 'https://curveradarhook.vercel.app/webhook',
     ADMIN_UNIQUE_ID: process.env.ADMIN_UNIQUE_ID,
     ADMIN_IDS: (process.env.ADMIN_IDS || '').split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id)),
     
     PRICING: {
         MONTHLY: { amount: 49.00, currency: 'USD', plan_currency: 'SOL', days: 30, label: 'Monthly', emoji: '📅' },
-        YEARLY: { amount: 550.00, currency: 'USD',plan_currency: 'SOL', days: 365, label: 'Yearly', emoji: '📆' },
-        LIFETIME: { amount: 5000.00, currency: 'USD',plan_currency: 'SOL', days: 3650, label: 'Lifetime', emoji: '👑' },
-        VIP: { amount: 6000.00, currency: 'USD',plan_currency: 'SOL', days: 3650, label: 'VIP Lifetime', emoji: '💎' }
+        YEARLY: { amount: 550.00, currency: 'USD', plan_currency: 'SOL', days: 365, label: 'Yearly', emoji: '📆' },
+        LIFETIME: { amount: 5000.00, currency: 'USD', plan_currency: 'SOL', days: 3650, label: 'Lifetime', emoji: '👑' },
+        VIP: { amount: 6000.00, currency: 'USD', plan_currency: 'SOL', days: 3650, label: 'VIP Lifetime', emoji: '💎' }
     },
     
     PAYMENT_TIMEOUT: 60 * 60 * 1000, // 1 hour
@@ -40,209 +42,267 @@ if (!CONFIG.TELEGRAM_TOKEN || !CONFIG.NOWPAYMENTS_API_KEY || !CONFIG.ADMIN_UNIQU
 // ============================================
 function log(message, level = 'INFO') {
     const timestamp = new Date().toISOString();
-    const logEntry = `[${timestamp}] [${level}] ${message}`;
-    console.log(logEntry);
-
-    const logDir = path.join(__dirname, 'logs');
-    if (!fs.existsSync(logDir)) {
-        fs.mkdirSync(logDir, { recursive: true });
-    }
-    fs.appendFileSync(
-        path.join(logDir, `bot-${new Date().toISOString().split('T')[0]}.log`),
-        logEntry + '\n'
-    );
+    console.log(`[${timestamp}] [${level}] ${message}`);
 }
 
 // ============================================
 // REDIS SETUP
 // ============================================
-const redis = new Redis(process.env.REDIS_URL || {
-    host: process.env.REDIS_HOST || 'localhost',
-    port: process.env.REDIS_PORT || 6379,
-    password: process.env.REDIS_PASSWORD || undefined,
-    retryStrategy: (times) => Math.min(times * 50, 2000)
-});
+let redis;
+let redisConnected = false;
 
-redis.on('connect', () => log('✅ Connected to Redis'));
-redis.on('error', (err) => log(`Redis error: ${err.message}`, 'ERROR'));
+try {
+    // Fixed: Proper Redis initialization with error handling
+    if (process.env.REDIS_URL) {
+        redis = new Redis({
+            url: process.env.REDIS_URL,
+            token: process.env.REDIS_PASSWORD
+        });
+        redisConnected = true;
+        console.log("✅ Connected to Upstash Redis...");
+    } else {
+        console.error("❌ REDIS_URL not found in environment variables");
+        process.exit(1);
+    }
+} catch (error) {
+    console.error(`❌ Failed to connect to Redis: ${error.message}`);
+    process.exit(1);
+}
 
 // ============================================
 // REDIS HELPERS
 // ============================================
 async function getUser(userId) {
-    const data = await redis.hgetall(`user:${userId}`);
-    return Object.keys(data).length ? data : null;
+    try {
+        const data = await redis.hgetall(`user:${userId}`);
+        return Object.keys(data).length ? data : null;
+    } catch (error) {
+        log(`Redis getUser error: ${error.message}`, 'ERROR');
+        return null;
+    }
 }
 
 async function createUser(userId, username, firstName) {
-    const user = await getUser(userId);
-    if (user) return user;
+    try {
+        const user = await getUser(userId);
+        if (user) return user;
 
-    const userData = {
-        userId: String(userId),
-        username: username || '',
-        firstName: firstName || '',
-        joinedAt: String(Date.now()),
-        lastActive: String(Date.now()),
-        isPremium: '0',
-        premiumExpiry: '0',
-        premiumTier: '',
-        totalSpent: '0'
-    };
+        const userData = {
+            userId: String(userId),
+            username: username || '',
+            firstName: firstName || '',
+            joinedAt: String(Date.now()),
+            lastActive: String(Date.now()),
+            isPremium: '0',
+            premiumExpiry: '0',
+            premiumTier: '',
+            totalSpent: '0'
+        };
 
-    await redis.hset(`user:${userId}`, userData);
-    await redis.sadd('users', userId);
-    log(`👤 User created: ${userId}`);
-    return userData;
+        await redis.hset(`user:${userId}`, userData);
+        await redis.sadd('users', userId);
+        log(`👤 User created: ${userId}`);
+        return userData;
+    } catch (error) {
+        log(`Redis createUser error: ${error.message}`, 'ERROR');
+        throw error;
+    }
 }
 
 async function updateUserActivity(userId) {
-    await redis.hset(`user:${userId}`, 'lastActive', String(Date.now()));
+    try {
+        await redis.hset(`user:${userId}`, 'lastActive', String(Date.now()));
+    } catch (error) {
+        log(`Redis updateUserActivity error: ${error.message}`, 'ERROR');
+    }
 }
 
 async function getPremiumStatus(userId) {
-    const user = await getUser(userId);
-    if (!user) return { isPremium: false, expiresIn: null, tier: null };
+    try {
+        const user = await getUser(userId);
+        if (!user) return { isPremium: false, expiresIn: null, tier: null };
 
-    const now = Date.now();
-    const expiry = parseInt(user.premiumExpiry);
+        const now = Date.now();
+        const expiry = parseInt(user.premiumExpiry);
 
-    if (user.isPremium === '1' && expiry > now) {
-        const daysLeft = Math.ceil((expiry - now) / (24 * 60 * 60 * 1000));
-        return {
-            isPremium: true,
-            expiresIn: daysLeft,
-            tier: user.premiumTier || 'premium',
-            expiryDate: new Date(expiry).toISOString()
-        };
+        if (user.isPremium === '1' && expiry > now) {
+            const daysLeft = Math.ceil((expiry - now) / (24 * 60 * 60 * 1000));
+            return {
+                isPremium: true,
+                expiresIn: daysLeft,
+                tier: user.premiumTier || 'premium',
+                expiryDate: new Date(expiry).toISOString()
+            };
+        }
+
+        if (user.isPremium === '1' && expiry <= now) {
+            await redis.hset(`user:${userId}`, { isPremium: '0', premiumExpiry: '0', premiumTier: '' });
+        }
+
+        return { isPremium: false, expiresIn: null, tier: null };
+    } catch (error) {
+        log(`Redis getPremiumStatus error: ${error.message}`, 'ERROR');
+        return { isPremium: false, expiresIn: null, tier: null };
     }
-
-    if (user.isPremium === '1' && expiry <= now) {
-        await redis.hset(`user:${userId}`, { isPremium: '0', premiumExpiry: '0', premiumTier: '' });
-    }
-
-    return { isPremium: false, expiresIn: null, tier: null };
 }
 
 async function setPremium(userId, days, tier) {
-    let user = await getUser(userId);
-    if (!user) {
-        user = await createUser(userId, '', '');
+    try {
+        let user = await getUser(userId);
+        if (!user) {
+            user = await createUser(userId, '', '');
+        }
+
+        const now = Date.now();
+        let expiry = now + (days * 24 * 60 * 60 * 1000);
+
+        if (user.isPremium === '1') {
+            expiry = parseInt(user.premiumExpiry) + (days * 24 * 60 * 60 * 1000);
+        }
+
+        await redis.hset(`user:${userId}`, {
+            isPremium: '1',
+            premiumExpiry: String(expiry),
+            premiumTier: tier || 'premium'
+        });
+
+        log(`⭐ Premium set for user ${userId}: ${days} days, tier: ${tier}`);
+    } catch (error) {
+        log(`Redis setPremium error: ${error.message}`, 'ERROR');
+        throw error;
     }
-
-    const now = Date.now();
-    let expiry = now + (days * 24 * 60 * 60 * 1000);
-
-    if (user.isPremium === '1') {
-        expiry = parseInt(user.premiumExpiry) + (days * 24 * 60 * 60 * 1000);
-    }
-
-    await redis.hset(`user:${userId}`, {
-        isPremium: '1',
-        premiumExpiry: String(expiry),
-        premiumTier: tier || 'premium'
-    });
-
-    log(`⭐ Premium set for user ${userId}: ${days} days, tier: ${tier}`);
 }
 
 async function createPayment(userId, planId, amount, invoiceUrl, orderId) {
-    const payment = {
-        orderId,
-        userId: String(userId),
-        planId,
-        amount: String(amount),
-        currency: 'USD',
-        status: 'pending',
-        createdAt: String(Date.now()),
-        updatedAt: String(Date.now()),
-        invoiceUrl,
-        confirmed: '0',
-        confirmedAt: '0'
-    };
+    try {
+        const payment = {
+            orderId,
+            userId: String(userId),
+            planId,
+            amount: String(amount),
+            currency: 'USD',
+            status: 'pending',
+            createdAt: String(Date.now()),
+            updatedAt: String(Date.now()),
+            invoiceUrl,
+            confirmed: '0',
+            confirmedAt: '0'
+        };
 
-    await redis.hset(`payment:${orderId}`, payment);
-    await redis.sadd(`user:${userId}:payments`, orderId);
-    await redis.sadd('payments:pending', orderId);
-    log(`💳 Payment created: ${orderId} for user ${userId}`);
-    return payment;
+        await redis.hset(`payment:${orderId}`, payment);
+        await redis.sadd(`user:${userId}:payments`, orderId);
+        await redis.sadd('payments:pending', orderId);
+        log(`💳 Payment created: ${orderId} for user ${userId}`);
+        return payment;
+    } catch (error) {
+        log(`Redis createPayment error: ${error.message}`, 'ERROR');
+        throw error;
+    }
 }
 
 async function getPayment(orderId) {
-    return await redis.hgetall(`payment:${orderId}`);
+    try {
+        return await redis.hgetall(`payment:${orderId}`);
+    } catch (error) {
+        log(`Redis getPayment error: ${error.message}`, 'ERROR');
+        return null;
+    }
 }
 
 async function getPendingPaymentByUser(userId) {
-    const paymentIds = await redis.smembers(`user:${userId}:payments`);
-    
-    for (const id of paymentIds) {
-        const payment = await getPayment(id);
-        if (payment.status === 'pending' && payment.confirmed === '0') {
-            const now = Date.now();
-            if (now - parseInt(payment.createdAt) < CONFIG.PAYMENT_TIMEOUT) {
-                return payment;
-            } else {
-                await redis.hset(`payment:${id}`, 'status', 'expired');
+    try {
+        const paymentIds = await redis.smembers(`user:${userId}:payments`);
+        
+        for (const id of paymentIds) {
+            const payment = await getPayment(id);
+            if (payment && payment.status === 'pending' && payment.confirmed === '0') {
+                const now = Date.now();
+                if (now - parseInt(payment.createdAt) < CONFIG.PAYMENT_TIMEOUT) {
+                    return payment;
+                } else {
+                    await redis.hset(`payment:${id}`, 'status', 'expired');
+                }
             }
         }
+        return null;
+    } catch (error) {
+        log(`Redis getPendingPaymentByUser error: ${error.message}`, 'ERROR');
+        return null;
     }
-    return null;
 }
 
 async function confirmPayment(orderId) {
-    const payment = await getPayment(orderId);
-    if (!payment) return null;
+    try {
+        const payment = await getPayment(orderId);
+        if (!payment) return null;
 
-    const paid = await redis.sismember('payment_ids', orderId);
-    
-    if (paid) {
-        const plan = CONFIG.PRICING[payment.planId];
-        const user = await getUser(payment.userId);
+        // Note: This seems to be checking for a 'payment_ids' set that may not exist
+        // You might want to implement proper payment confirmation logic
+        const paid = await redis.sismember('payment_ids', orderId);
         
-        if (user && plan) {
-            await setPremium(payment.userId, plan.days, payment.planId.toLowerCase());
-            await redis.hset(`payment:${orderId}`, {
-                status: 'confirmed',
-                confirmed: '1',
-                confirmedAt: String(Date.now())
-            });
-            await redis.srem('payments:pending', orderId);
+        if (paid) {
+            const plan = CONFIG.PRICING[payment.planId];
+            const user = await getUser(payment.userId);
             
-            const spent = parseInt(user.totalSpent) + plan.amount;
-            await redis.hset(`user:${payment.userId}`, 'totalSpent', String(spent));
-            
-            log(`✅ Payment confirmed: ${orderId} for user ${payment.userId}`);
-            return payment;
+            if (user && plan) {
+                await setPremium(payment.userId, plan.days, payment.planId.toLowerCase());
+                await redis.hset(`payment:${orderId}`, {
+                    status: 'confirmed',
+                    confirmed: '1',
+                    confirmedAt: String(Date.now())
+                });
+                await redis.srem('payments:pending', orderId);
+                
+                const spent = parseInt(user.totalSpent) + plan.amount;
+                await redis.hset(`user:${payment.userId}`, 'totalSpent', String(spent));
+                
+                log(`✅ Payment confirmed: ${orderId} for user ${payment.userId}`);
+                return payment;
+            }
         }
-    }
 
-    log(`⚠️ Payment ${orderId} not found in Redis`, 'WARN');
-    return null;
+        log(`⚠️ Payment ${orderId} not found in Redis`, 'WARN');
+        return null;
+    } catch (error) {
+        log(`Redis confirmPayment error: ${error.message}`, 'ERROR');
+        return null;
+    }
 }
 
 async function getStats() {
-    const allUsers = await redis.smembers('users');
-    let premiumCount = 0;
-    let totalRevenue = 0;
+    try {
+        const allUsers = await redis.smembers('users');
+        let premiumCount = 0;
+        let totalRevenue = 0;
 
-    for (const userId of allUsers) {
-        const status = await getPremiumStatus(userId);
-        if (status.isPremium) premiumCount++;
-        
-        const user = await getUser(userId);
-        totalRevenue += parseInt(user.totalSpent) || 0;
+        for (const userId of allUsers) {
+            const status = await getPremiumStatus(userId);
+            if (status.isPremium) premiumCount++;
+            
+            const user = await getUser(userId);
+            totalRevenue += parseInt(user?.totalSpent) || 0;
+        }
+
+        const pendingPayments = await redis.smembers('payments:pending');
+        const allPayments = await redis.keys('payment:*');
+
+        return {
+            totalUsers: allUsers.length,
+            premiumUsers: premiumCount,
+            totalRevenue,
+            totalPayments: allPayments.length,
+            pendingPayments: pendingPayments.length
+        };
+    } catch (error) {
+        log(`Redis getStats error: ${error.message}`, 'ERROR');
+        return {
+            totalUsers: 0,
+            premiumUsers: 0,
+            totalRevenue: 0,
+            totalPayments: 0,
+            pendingPayments: 0
+        };
     }
-
-    const pendingPayments = await redis.smembers('payments:pending');
-    const allPayments = await redis.keys('payment:*');
-
-    return {
-        totalUsers: allUsers.length,
-        premiumUsers: premiumCount,
-        totalRevenue,
-        totalPayments: allPayments.length,
-        pendingPayments: pendingPayments.length
-    };
 }
 
 // ============================================
@@ -259,7 +319,7 @@ async function createInvoice(userId, chatId, planId) {
         const payload = {
             price_amount: plan.amount,
             price_currency: plan.currency,
-            pay_currency: plan.pay_currency || "SOL",
+            pay_currency: plan.plan_currency || "SOL",
             order_id: orderId,
             order_description: description,
             ipn_callback_url: CONFIG.WEBHOOK_URL,
@@ -308,12 +368,21 @@ async function createInvoice(userId, chatId, planId) {
 // ============================================
 // BOT SETUP
 // ============================================
-const bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN, { polling: true });
+//const bot = new TelegramBot(CONFIG.TELEGRAM_TOKEN, { webHook:{ autoDelete: false},polling: false  }); // Changed to polling: true
+const token = process.env.TELEGRAM_BOT_TOKEN;
+if (!token) {
+    throw new Error('TELEGRAM_BOT_TOKEN is not set');
+}
+
+// IMPORTANT: No polling, just create the bot
+const bot = new TelegramBot(token);
 let botMe = null;
 
 bot.getMe().then(me => {
     botMe = me;
     log(`🤖 Bot name: @${me.username}`);
+}).catch(error => {
+    log(`Failed to get bot info: ${error.message}`, 'ERROR');
 });
 
 // ============================================
@@ -390,6 +459,7 @@ ${!status.isPremium ? '\n💳 *Click below to upgrade!*' : ''}
         log(`👋 User ${userId} started bot`);
     } catch (err) {
         log(`Start command error: ${err.message}`, 'ERROR');
+        await bot.sendMessage(chatId, '❌ An error occurred. Please try again later.');
     }
 });
 
@@ -420,7 +490,6 @@ Choose your plan:
 ├─ Unlimited access
 ├─ All features
 └─ One-time payment
-
 
 💎 *VIP Lifetime* - $6,000
 ├─ Unlimited access
@@ -465,7 +534,9 @@ bot.onText(/\/status/, async (msg) => {
             await bot.sendMessage(chatId, '❌ User not found. Use /start first.');
             return;
         }
-        await bot.sendMessage(chatId,"If you just paid...Please wait a few seconds for our server to update your data..Then type /status");
+        
+        await bot.sendMessage(chatId, "⏳ If you just paid... Please wait a few seconds for our server to update your data.. Then type /status again");
+        
         const message = `
 📊 *Subscription Status*
 
@@ -489,10 +560,9 @@ ${status.isPremium ? `
 });
 
 // /features
-
-bot.onText(/\/features/, async (msg)=>{
-    try  {
-const prem_message = `
+bot.onText(/\/features/, async (msg) => {
+    try {
+        const prem_message = `
 💎 *PREMIUM PRICING PLANS*
 
 Choose the plan that fits your trading needs:
@@ -513,21 +583,15 @@ Choose the plan that fits your trading needs:
 💰 $6,000 one-time
 🎯 VIP support + exclusive features
 `;
- await bot.sendMessage(msg.chat.id, prem_message, { parse_mode: 'Markdown' });
+        await bot.sendMessage(msg.chat.id, prem_message, { parse_mode: 'Markdown' });
     } catch (err) {
-        log(`Help command error: ${err.message}`, 'ERROR');
+        log(`Features command error: ${err.message}`, 'ERROR');
     }
-
 });
-
-
-
-
 
 // /help
 bot.onText(/\/help/, async (msg) => {
     const chatId = msg.chat.id;
-    const userId = msg.from.id;
 
     try {
         const message = `
@@ -548,8 +612,9 @@ bot.onText(/\/help/, async (msg) => {
 4. Complete payment
 5. Premium activated!
         `;
-const enlight_msg=`
-*Premium Tier- $49.99 per month*
+        
+        const enlight_msg = `
+*Premium Tier - $49.99 per month*
 Get access to all premium bots and features:
 
 📊 *What you get:*
@@ -591,10 +656,9 @@ Get access to all premium bots and features:
 • Trade recommendations 💡
 • Community chats and support
 `;
-        await bot.sendChatAction(chatId,"typing");
+        await bot.sendChatAction(chatId, "typing");
         await bot.sendMessage(chatId, enlight_msg, { parse_mode: 'Markdown' });
         await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
-
     } catch (err) {
         log(`Help command error: ${err.message}`, 'ERROR');
     }
@@ -655,9 +719,11 @@ bot.onText(/\/history/, async (msg) => {
         
         for (const id of paymentIds.slice(-10)) {
             const payment = await getPayment(id);
-            const date = new Date(parseInt(payment.createdAt)).toLocaleDateString();
-            const emoji = payment.status === 'confirmed' ? '✅' : payment.status === 'pending' ? '⏳' : '❌';
-            message += `${emoji} $${payment.amount} (${payment.planId})\n${date}\n\n`;
+            if (payment) {
+                const date = new Date(parseInt(payment.createdAt)).toLocaleDateString();
+                const emoji = payment.status === 'confirmed' ? '✅' : payment.status === 'pending' ? '⏳' : '❌';
+                message += `${emoji} $${payment.amount} (${payment.planId})\n${date}\n\n`;
+            }
         }
 
         await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
@@ -786,7 +852,7 @@ Click below to complete payment:
 
                 await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
                 log(`✅ Payment confirmed for user ${userId}: ${pending.orderId}`);
-                await bot.sendMessage(CONFIG.ADMIN_UNIQUE_ID,`✅ Payment confirmed for user ${userId}: ${pending.orderId}`)
+                await bot.sendMessage(CONFIG.ADMIN_UNIQUE_ID, `✅ Payment confirmed for user ${userId}: ${pending.orderId}`);
             } else {
                 await bot.sendMessage(chatId, `
 ❌ *Payment not confirmed*
@@ -836,7 +902,7 @@ Click below to activate premium:
 ⏳ *Payment Pending*
 
 Amount: $${pending.amount}
-Plan: ${plan.label}
+Plan: ${plan?.label || 'Unknown'}
 
 If you've already paid, the system will confirm within a few minutes.
                     `;
@@ -900,6 +966,7 @@ Choose your plan:
         }
     } catch (err) {
         log(`Callback error: ${err.message}`, 'ERROR');
+        await bot.sendMessage(chatId, '❌ An error occurred. Please try again.');
     }
 });
 
@@ -990,7 +1057,7 @@ bot.on('my_chat_member', async (update) => {
 // ============================================
 bot.on('polling_error', (error) => {
     log(`Polling error: ${error.message}`, 'ERROR');
-    log("Could not connect to Telegram api..check the token or internet service");
+    log("⚠️ Could not connect to Telegram API. Check the token or internet service");
 });
 
 bot.on('error', (error) => {
@@ -1002,14 +1069,14 @@ bot.on('error', (error) => {
 // ============================================
 process.on('SIGINT', async () => {
     log('Shutting down bot...');
-    await redis.quit();
+//    if (redis) await redis.close();
     bot.stopPolling();
     process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
     log('Shutting down bot...');
-    await redis.quit();
+//    if (redis) await redis.close();
     bot.stopPolling();
     process.exit(0);
 });
