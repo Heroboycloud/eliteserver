@@ -20,7 +20,8 @@ const CONFIG = {
     WEBHOOK_URL: process.env.WEBHOOK_NOW_URL || 'https://curveradarhook.vercel.app/webhook',
     ADMIN_UNIQUE_ID: process.env.ADMIN_UNIQUE_ID,
     ADMIN_IDS: (process.env.ADMIN_IDS || '').split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id)),
-    
+    FREE_CHANNEL_ID:"-1003766079811" ,
+    PREMIUM_CHANNEL_ID:"-5552095929",
     PRICING: {
         MONTHLY: { amount: 49.00, currency: 'USD', plan_currency: 'SOL', days: 30, label: 'Monthly', emoji: '📅' },
         YEARLY: { amount: 550.00, currency: 'USD', plan_currency: 'SOL', days: 365, label: 'Yearly', emoji: '📆' },
@@ -440,7 +441,7 @@ ${status.isPremium ? `📅 Expires in: ${status.expiresIn} days` : ''}
 /status - Check subscription
 /history - Payment history
 /help - Help menu
-
+/invite - Give you link to channel
 ${!status.isPremium ? '\n💳 *Click below to upgrade!*' : ''}
         `;
 
@@ -462,6 +463,50 @@ ${!status.isPremium ? '\n💳 *Click below to upgrade!*' : ''}
         await bot.sendMessage(chatId, '❌ An error occurred. Please try again later.');
     }
 });
+
+
+
+
+// Generate and send invite link
+bot.onText(/\/invite/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const status = await getPremiumStatus(userId);
+    const CHANNEL_ID= CONFIG.FREE_CHANNEL_ID;
+   if(status.isPremium){
+    const CHANNEL_ID= CONFIG.PREMIUM_CHANNEL_ID;
+
+}
+else {
+    const CHANNEL_ID= CONFIG.FREE_CHANNEL_ID;
+
+}
+    try {
+        // Create a one-time invite link
+        const inviteLink = await bot.createChatInviteLink(CHANNEL_ID, {
+            member_limit: 1,        // One-time use
+            expire_date: Math.floor(Date.now() / 1000) + 120 // Expires in 2 min/secs 
+        });
+        
+        await bot.sendMessage(chatId, `
+🔗 *Your One-Time Invite Link:*
+${inviteLink.invite_link}
+⚠️ *Valid  for 1 hour | Can be used once*
+        `, { parse_mode: 'Markdown' });
+        
+        console.log(`✅ Invite sent to ${userId}`);
+        
+    } catch (error) {
+        console.error('❌ Error:', error.message);
+        await bot.sendMessage(chatId, '❌ Failed to generate link. Make sure bot is admin in the channel.');
+    }
+});
+
+
+
+
+
+
 
 // /pay
 bot.onText(/\/pay/, async (msg) => {
@@ -524,7 +569,7 @@ Choose your plan:
 bot.onText(/\/status/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
-
+    const new_link= await bot.createChatInviteLink(CONFIG.PREMIUM_CHANNEL_ID, { member_limit: 1 });
     try {
         await updateUserActivity(userId);
         const status = await getPremiumStatus(userId);
@@ -547,6 +592,7 @@ ${status.isPremium ? `
 📅 Expires: ${new Date(status.expiryDate).toLocaleDateString()}
 📆 Days remaining: ${status.expiresIn}
 💳 Tier: ${status.tier}
+Group Link to join: ${new_link.invite_link}
 ` : `
 🔓 *Status:* FREE
 💳 Upgrade with /pay

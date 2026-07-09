@@ -1,6 +1,6 @@
 // set-webhook.js
 const TelegramBot = require('node-telegram-bot-api');
-
+require("dotenv").config()
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) {
     console.error('❌ TELEGRAM_BOT_TOKEN not set');
@@ -10,7 +10,7 @@ if (!token) {
 const bot = new TelegramBot(token);
 
 // Replace with your Render URL after deployment
-const WEBHOOK_URL = 'https://YOUR-APP-NAME.onrender.com/webhook';
+const WEBHOOK_URL = 'https://eliteserver-gvlr.onrender.com/webhook';
 
 async function setupWebhook() {
     try {
