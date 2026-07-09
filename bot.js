@@ -442,6 +442,7 @@ ${status.isPremium ? `📅 Expires in: ${status.expiresIn} days` : ''}
 /history - Payment history
 /help - Help menu
 /invite - Give you link to channel
+
 ${!status.isPremium ? '\n💳 *Click below to upgrade!*' : ''}
         `;
 
@@ -472,20 +473,20 @@ bot.onText(/\/invite/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
     const status = await getPremiumStatus(userId);
-    const CHANNEL_ID= CONFIG.FREE_CHANNEL_ID;
+    let CHANNEL_ID= CONFIG.FREE_CHANNEL_ID;
    if(status.isPremium){
-    const CHANNEL_ID= CONFIG.PREMIUM_CHANNEL_ID;
+    CHANNEL_ID= CONFIG.PREMIUM_CHANNEL_ID;
 
 }
 else {
-    const CHANNEL_ID= CONFIG.FREE_CHANNEL_ID;
+    CHANNEL_ID= CONFIG.FREE_CHANNEL_ID;
 
 }
     try {
         // Create a one-time invite link
         const inviteLink = await bot.createChatInviteLink(CHANNEL_ID, {
             member_limit: 1,        // One-time use
-            expire_date: Math.floor(Date.now() / 1000) + 120 // Expires in 2 min/secs 
+            expire_date: Math.floor(Date.now() / 1000) + 3600 // Expires in 2 min/secs 
         });
         
         await bot.sendMessage(chatId, `
