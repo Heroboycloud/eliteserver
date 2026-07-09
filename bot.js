@@ -17,7 +17,7 @@ const CONFIG = {
     TELEGRAM_TOKEN: process.env.TELEGRAM_TOKEN,
     BOT_NAME: process.env.BOT_NAME,
     NOWPAYMENTS_API_KEY: process.env.NOWPAYMENTS_API_KEY,
-    WEBHOOK_URL: process.env.WEBHOOK_NOW_URL || 'https://curveradarhook.vercel.app/webhook',
+    WEBHOOK_URL: process.env.WEBHOOK_NOW_URL || 'https://curveradarhook.vercel.app/webhook/nowpayments',
     ADMIN_UNIQUE_ID: process.env.ADMIN_UNIQUE_ID,
     ADMIN_IDS: (process.env.ADMIN_IDS || '').split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id)),
     FREE_CHANNEL_ID:"-1003766079811" ,
