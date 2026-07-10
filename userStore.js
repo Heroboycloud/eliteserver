@@ -76,6 +76,15 @@ function createStore(config = {}) {
         return (await redis.sismember('users', String(userId))) === 1;
     }
 
+    /** Bump a user's lastActive timestamp (creates the user first if needed). */
+    async function updateActivity(userId) {
+        if (!(await userExists(userId))) {
+            await addUser(userId);
+        }
+        await redis.hset(`user:${userId}`, { lastActive: String(Date.now()) });
+        return true;
+    }
+
     // ----------------------------------------------------------------
     // Paid status (has this user paid, independent of premium expiry)
     // ----------------------------------------------------------------
@@ -153,7 +162,12 @@ function createStore(config = {}) {
 
         if (user.isPremium === '1' && expiry > now) {
             const daysLeft = Math.ceil((expiry - now) / (24 * 60 * 60 * 1000));
-            return { isPremium: true, tier: user.premiumTier || 'premium', expiresIn: daysLeft };
+            return {
+                isPremium: true,
+                tier: user.premiumTier || 'premium',
+                expiresIn: daysLeft,
+                expiryDate: new Date(expiry).toISOString()
+            };
         }
 
         // Expired — clean up.
@@ -162,7 +176,7 @@ function createStore(config = {}) {
             await redis.srem('users:premium', String(userId));
         }
 
-        return { isPremium: false, tier: null, expiresIn: null };
+        return { isPremium: false, tier: null, expiresIn: null, expiryDate: null };
     }
 
     /** Quick boolean premium check. */
@@ -206,6 +220,7 @@ function createStore(config = {}) {
         getUser,
         listUsers,
         userExists,
+        updateActivity,
         markPaid,
         isPaid,
         removePaid,
@@ -220,3 +235,4 @@ function createStore(config = {}) {
 }
 
 module.exports = { createStore };
+
