@@ -2,7 +2,7 @@
 // Combines elitepay.js commands with testbot.js API invoicing
 
 const TelegramBot = require('node-telegram-bot-api');
-const { Redis } = require('@upstash/redis');
+const { createStore } = require('./userStore');
 const path = require('path');
 const fs = require('fs');
 const dotenv = require('dotenv');
@@ -47,22 +47,19 @@ function log(message, level = 'INFO') {
 }
 
 // ============================================
-// REDIS SETUP
+// REDIS SETUP (shared userStore — same DB used by the webhook server)
 // ============================================
-let redis;
-let redisConnected = false;
+let store;
 
 try {
-    // Fixed: Proper Redis initialization with error handling
-    if (process.env.REDIS_URL) {
-        redis = new Redis({
+    if (process.env.REDIS_URL && process.env.REDIS_PASSWORD) {
+        store = createStore({
             url: process.env.REDIS_URL,
             token: process.env.REDIS_PASSWORD
         });
-        redisConnected = true;
-        console.log("✅ Connected to Upstash Redis...");
+        console.log("✅ Connected to Upstash Redis via userStore...");
     } else {
-        console.error("❌ REDIS_URL not found in environment variables");
+        console.error("❌ REDIS_URL or REDIS_PASSWORD not found in environment variables");
         process.exit(1);
     }
 } catch (error) {
@@ -70,106 +67,59 @@ try {
     process.exit(1);
 }
 
+// Raw client, still exposed for the payment-record keyspace below
+// (payment:{orderId}, user:{id}:payments, payments:pending), which lives
+// outside userStore's user/paid/premium schema but is the same DB/connection.
+const redis = store.redis;
+
 // ============================================
-// REDIS HELPERS
+// REDIS HELPERS (thin wrappers around userStore, so bot.js and the
+// webhook server always read/write the exact same paid/premium state)
 // ============================================
 async function getUser(userId) {
     try {
-        const data = await redis.hgetall(`user:${userId}`);
-        return Object.keys(data).length ? data : null;
+        return await store.getUser(userId);
     } catch (error) {
-        log(`Redis getUser error: ${error.message}`, 'ERROR');
+        log(`getUser error: ${error.message}`, 'ERROR');
         return null;
     }
 }
 
 async function createUser(userId, username, firstName) {
     try {
-        const user = await getUser(userId);
-        if (user) return user;
-
-        const userData = {
-            userId: String(userId),
-            username: username || '',
-            firstName: firstName || '',
-            joinedAt: String(Date.now()),
-            lastActive: String(Date.now()),
-            isPremium: '0',
-            premiumExpiry: '0',
-            premiumTier: '',
-            totalSpent: '0'
-        };
-
-        await redis.hset(`user:${userId}`, userData);
-        await redis.sadd('users', userId);
-        log(`👤 User created: ${userId}`);
-        return userData;
+        const user = await store.addUser(userId, { username, firstName });
+        log(`👤 User ready: ${userId}`);
+        return user;
     } catch (error) {
-        log(`Redis createUser error: ${error.message}`, 'ERROR');
+        log(`createUser error: ${error.message}`, 'ERROR');
         throw error;
     }
 }
 
 async function updateUserActivity(userId) {
     try {
-        await redis.hset(`user:${userId}`, 'lastActive', String(Date.now()));
+        await store.updateActivity(userId);
     } catch (error) {
-        log(`Redis updateUserActivity error: ${error.message}`, 'ERROR');
+        log(`updateUserActivity error: ${error.message}`, 'ERROR');
     }
 }
 
 async function getPremiumStatus(userId) {
     try {
-        const user = await getUser(userId);
-        if (!user) return { isPremium: false, expiresIn: null, tier: null };
-
-        const now = Date.now();
-        const expiry = parseInt(user.premiumExpiry);
-
-        if (user.isPremium === '1' && expiry > now) {
-            const daysLeft = Math.ceil((expiry - now) / (24 * 60 * 60 * 1000));
-            return {
-                isPremium: true,
-                expiresIn: daysLeft,
-                tier: user.premiumTier || 'premium',
-                expiryDate: new Date(expiry).toISOString()
-            };
-        }
-
-        if (user.isPremium === '1' && expiry <= now) {
-            await redis.hset(`user:${userId}`, { isPremium: '0', premiumExpiry: '0', premiumTier: '' });
-        }
-
-        return { isPremium: false, expiresIn: null, tier: null };
+        return await store.getPremiumStatus(userId);
     } catch (error) {
-        log(`Redis getPremiumStatus error: ${error.message}`, 'ERROR');
-        return { isPremium: false, expiresIn: null, tier: null };
+        log(`getPremiumStatus error: ${error.message}`, 'ERROR');
+        return { isPremium: false, expiresIn: null, tier: null, expiryDate: null };
     }
 }
 
 async function setPremium(userId, days, tier) {
     try {
-        let user = await getUser(userId);
-        if (!user) {
-            user = await createUser(userId, '', '');
-        }
-
-        const now = Date.now();
-        let expiry = now + (days * 24 * 60 * 60 * 1000);
-
-        if (user.isPremium === '1') {
-            expiry = parseInt(user.premiumExpiry) + (days * 24 * 60 * 60 * 1000);
-        }
-
-        await redis.hset(`user:${userId}`, {
-            isPremium: '1',
-            premiumExpiry: String(expiry),
-            premiumTier: tier || 'premium'
-        });
-
+        const result = await store.addPremium(userId, days, tier);
         log(`⭐ Premium set for user ${userId}: ${days} days, tier: ${tier}`);
+        return result;
     } catch (error) {
-        log(`Redis setPremium error: ${error.message}`, 'ERROR');
+        log(`setPremium error: ${error.message}`, 'ERROR');
         throw error;
     }
 }
@@ -237,14 +187,15 @@ async function confirmPayment(orderId) {
         const payment = await getPayment(orderId);
         if (!payment) return null;
 
-        // Note: This seems to be checking for a 'payment_ids' set that may not exist
-        // You might want to implement proper payment confirmation logic
-        const paid = await redis.sismember('payment_ids', orderId);
-        
+        // The webhook server marks a user paid via userStore's markPaid(),
+        // which adds them to the shared "users:paid" set — check that same
+        // set here so bot.js and the webhook always agree on paid status.
+        const paid = await store.isPaid(payment.userId);
+
         if (paid) {
             const plan = CONFIG.PRICING[payment.planId];
             const user = await getUser(payment.userId);
-            
+
             if (user && plan) {
                 await setPremium(payment.userId, plan.days, payment.planId.toLowerCase());
                 await redis.hset(`payment:${orderId}`, {
@@ -253,51 +204,54 @@ async function confirmPayment(orderId) {
                     confirmedAt: String(Date.now())
                 });
                 await redis.srem('payments:pending', orderId);
-                
-                const spent = parseInt(user.totalSpent) + plan.amount;
-                await redis.hset(`user:${payment.userId}`, 'totalSpent', String(spent));
-                
+
+                // totalSpent is already bumped by store.markPaid() when the
+                // webhook fires, so it's not incremented again here.
+
                 log(`✅ Payment confirmed: ${orderId} for user ${payment.userId}`);
                 return payment;
             }
         }
 
-        log(`⚠️ Payment ${orderId} not found in Redis`, 'WARN');
+        log(`⚠️ Payment ${orderId} not confirmed yet (user not in paid set)`, 'WARN');
         return null;
     } catch (error) {
-        log(`Redis confirmPayment error: ${error.message}`, 'ERROR');
+        log(`confirmPayment error: ${error.message}`, 'ERROR');
         return null;
     }
 }
 
 async function getStats() {
     try {
-        const allUsers = await redis.smembers('users');
-        let premiumCount = 0;
-        let totalRevenue = 0;
+        // Counts come straight from userStore, so they always match what
+        // the webhook server sees.
+        const { totalUsers, paidUsers, premiumUsers } = await store.getStats();
 
+        let totalRevenue = 0;
+        const allUsers = await store.listUsers();
         for (const userId of allUsers) {
-            const status = await getPremiumStatus(userId);
-            if (status.isPremium) premiumCount++;
-            
-            const user = await getUser(userId);
+            const user = await store.getUser(userId);
             totalRevenue += parseInt(user?.totalSpent) || 0;
         }
 
+        // Individual payment-invoice records aren't part of userStore's
+        // schema, so those still come from the raw client.
         const pendingPayments = await redis.smembers('payments:pending');
         const allPayments = await redis.keys('payment:*');
 
         return {
-            totalUsers: allUsers.length,
-            premiumUsers: premiumCount,
+            totalUsers,
+            paidUsers,
+            premiumUsers,
             totalRevenue,
             totalPayments: allPayments.length,
             pendingPayments: pendingPayments.length
         };
     } catch (error) {
-        log(`Redis getStats error: ${error.message}`, 'ERROR');
+        log(`getStats error: ${error.message}`, 'ERROR');
         return {
             totalUsers: 0,
+            paidUsers: 0,
             premiumUsers: 0,
             totalRevenue: 0,
             totalPayments: 0,
@@ -798,6 +752,7 @@ bot.onText(/\/admin/, async (msg) => {
 📈 Revenue: $${stats.totalRevenue.toLocaleString()}
 💳 Payments: ${stats.totalPayments}
 👥 Total Users: ${stats.totalUsers}
+💵 Paid (ever): ${stats.paidUsers}
 ⭐ Premium: ${stats.premiumUsers}
 ⏳ Pending: ${stats.pendingPayments}
         `;
@@ -924,7 +879,7 @@ Click /status to check again.
                 `;
                 await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
             } else if (pending) {
-                const paid = await redis.sismember('payment_ids', pending.orderId);
+                const paid = await store.isPaid(userId);
                 const plan = CONFIG.PRICING[pending.planId];
                 
                 if (paid) {
@@ -1001,6 +956,7 @@ Choose your plan:
 📊 *Full Statistics*
 
 👥 Total Users: ${stats.totalUsers}
+💵 Paid Users: ${stats.paidUsers}
 ⭐ Premium Users: ${stats.premiumUsers}
 💰 Total Revenue: $${stats.totalRevenue.toLocaleString()}
 💳 Total Payments: ${stats.totalPayments}
@@ -1137,3 +1093,4 @@ log('💳 Payment plans: Monthly ($49), Yearly ($550), Lifetime ($5K), VIP ($6K)
 log('🔗 Using Redis database');
 
 module.exports = bot;
+
