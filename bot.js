@@ -524,7 +524,7 @@ Choose your plan:
 bot.onText(/\/status/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
-    const new_link= await bot.createChatInviteLink(CONFIG.PREMIUM_CHANNEL_ID, { member_limit: 1 });
+
     try {
         await updateUserActivity(userId);
         const status = await getPremiumStatus(userId);
@@ -536,7 +536,20 @@ bot.onText(/\/status/, async (msg) => {
         }
         
         await bot.sendMessage(chatId, "⏳ If you just paid... Please wait a few seconds for our server to update your data.. Then type /status again");
-        
+
+        // Only generate an invite link when it's actually needed (premium users),
+        // and never let a failure here (bad channel ID, missing admin rights, etc.)
+        // take down the whole command.
+        let inviteLink = null;
+        if (status.isPremium) {
+            try {
+                const new_link = await bot.createChatInviteLink(CONFIG.PREMIUM_CHANNEL_ID, { member_limit: 1 });
+                inviteLink = new_link.invite_link;
+            } catch (linkErr) {
+                log(`Failed to create premium invite link: ${linkErr.message}`, 'ERROR');
+            }
+        }
+
         const message = `
 📊 *Subscription Status*
 
@@ -547,7 +560,7 @@ ${status.isPremium ? `
 📅 Expires: ${new Date(status.expiryDate).toLocaleDateString()}
 📆 Days remaining: ${status.expiresIn}
 💳 Tier: ${status.tier}
-Group Link to join: ${new_link.invite_link}
+${inviteLink ? `Group Link to join: ${inviteLink}` : '⚠️ Could not generate group invite link — contact an admin.'}
 ` : `
 🔓 *Status:* FREE
 💳 Upgrade with /pay
@@ -557,6 +570,7 @@ Group Link to join: ${new_link.invite_link}
         await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
     } catch (err) {
         log(`Status command error: ${err.message}`, 'ERROR');
+        await bot.sendMessage(chatId, '❌ An error occurred while checking your status. Please try again.').catch(() => {});
     }
 });
 
