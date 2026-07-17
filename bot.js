@@ -747,6 +747,52 @@ bot.onText(/\/history/, async (msg) => {
     }
 });
 
+// /trial for 2 weeks
+bot.onText(/\/trial/, async(msg)=>{
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+
+    try{
+        await updateUserActivity(userId);
+        const status = await getPremiumStatus(userId);
+        const user = await getUser(userId);
+        if (!user) {
+            log(`Error finding user:${userId}....`)
+            return;
+        }
+        else{
+            await bot.setPremium(userId,7);
+        }
+    }
+        catch(err){
+            log(`Error creating trial for user: ${userId}`);
+        }
+    const trialmsg=`
+    ✅ Your Free 7 DAYS  Trial has been created ...
+    You can now use these bots as you wish
+    @peakrider_bot - Get access to instant coin alerts from pumpfun
+    @RugShieldPro_bot - Scans tokens for scams, red flags, and suspicious patterns
+    @devscoutpro_bot - Tracks token creators and builds reputation scores
+    @MigrateAlertProBot - Detects token migrations from Pump.fun to DEXs
+    @ATHReclaimBot- Tracks token All-Time Highs and alert instantly
+    @BundleSentryProBot- Detect when developers use multiple wallets to artificially pump their tokens, with zero-delay alerts for verified users.
+    @TerminalXAIBot- Search, track, and watch Pump.fun tokens. Watchlist alerts are delivered instantly to verified users.
+    @WhaleRadarPro_Bot- Tracks large wallet buys on Pump.fun in real-time.
+    @CloneSentryProBot- Detect tokens that copy popular coins or show scam patterns.
+    @VelocityPredictor_Bot- Analyze Pump.fun tokens in real-time and predict breakouts.
+    @Pumpwalletbb_Bot - Creates coins from telegram directly and publish it.
+    
+    There are lot of insider tools and access to verified community when you upgrade to premium or vip using @ElitePremiumPayBot... or click /pay
+    `;
+    await bot.sendMessage(chatId,trialmsg);
+
+
+});
+
+
+
+
+
 // /admin
 bot.onText(/\/admin/, async (msg) => {
     const chatId = msg.chat.id;
