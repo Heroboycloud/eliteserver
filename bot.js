@@ -396,6 +396,7 @@ ${status.isPremium ? `📅 Expires in: ${status.expiresIn} days` : ''}
 /history - Payment history
 /help - Help menu
 /invite - Give you link to channel
+/trial - Access bots for trial
 
 ${!status.isPremium ? '\n💳 *Click below to upgrade!*' : ''}
         `;
@@ -761,7 +762,7 @@ bot.onText(/\/trial/, async(msg)=>{
             return;
         }
         else{
-            await bot.setPremium(userId,7);
+            await setPremium(userId,7);
         }
     }
         catch(err){
