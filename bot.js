@@ -765,6 +765,7 @@ bot.onText(/\/trial/, async(msg)=>{
         }
     }
         catch(err){
+            log(err);
             log(`Error creating trial for user: ${userId}`);
         }
     const trialmsg=`
