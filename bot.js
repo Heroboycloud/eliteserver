@@ -762,6 +762,7 @@ bot.onText(/\/trial/, async(msg)=>{
             return;
         }
         else{
+            await store.markPaid(userId,0);
             await setPremium(userId,7);
         }
     }
