@@ -6,6 +6,7 @@ const { createStore } = require('./userStore');
 const path = require('path');
 const fs = require('fs');
 const dotenv = require('dotenv');
+const cron= require('node-cron');
 dotenv.config(); // Fixed: Correct way to load dotenv
 
 console.clear();
@@ -344,6 +345,20 @@ bot.getMe().then(me => {
 // BOT COMMANDS
 // ============================================
 
+cron.schedule('*/18 * * * *', async () => {
+    try {
+        const time = new Date().toLocaleString();
+        const CHANNEL_ID="-1003766079811";
+        await bot.sendMessage(CHANNEL_ID,"To join the private community chat group, please upgrade to a premium plan. Use /pay to view available plans and make your payment. Thank you for your support!");
+        console.log(`Cron job ran at ${time}`);
+    } catch (error) {
+        console.error('Cron job error:', error.message);
+    }
+});
+
+
+
+
 // /start
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
@@ -396,6 +411,7 @@ ${status.isPremium ? `📅 Expires in: ${status.expiresIn} days` : ''}
 /history - Payment history
 /help - Help menu
 /invite - Give you link to channel
+/trial - Access bots for trial
 
 ${!status.isPremium ? '\n💳 *Click below to upgrade!*' : ''}
         `;
@@ -619,6 +635,7 @@ bot.onText(/\/help/, async (msg) => {
 /status - Subscription
 /history - Payment history
 /help - This menu
+/trial- Give me a trial
 
 💳 *How to Upgrade:*
 1. Click /pay
@@ -746,6 +763,54 @@ bot.onText(/\/history/, async (msg) => {
         log(`History command error: ${err.message}`, 'ERROR');
     }
 });
+
+// /trial for 2 weeks
+bot.onText(/\/trial/, async(msg)=>{
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+
+    try{
+        await updateUserActivity(userId);
+        const status = await getPremiumStatus(userId);
+        const user = await getUser(userId);
+        if (!user) {
+            log(`Error finding user:${userId}....`)
+            return;
+        }
+        else{
+            await store.markPaid(userId,0);
+            await setPremium(userId,7);
+        }
+    }
+        catch(err){
+            log(err);
+            log(`Error creating trial for user: ${userId}`);
+        }
+    const trialmsg=`
+    ✅ Your Free 7 DAYS  Trial has been created ...
+    You can now use these bots as you wish
+    @peakrider_bot - Get access to instant coin alerts from pumpfun
+    @RugShieldPro_bot - Scans tokens for scams, red flags, and suspicious patterns
+    @devscoutpro_bot - Tracks token creators and builds reputation scores
+    @MigrateAlertProBot - Detects token migrations from Pump.fun to DEXs
+    @ATHReclaimBot- Tracks token All-Time Highs and alert instantly
+    @BundleSentryProBot- Detect when developers use multiple wallets to artificially pump their tokens, with zero-delay alerts for verified users.
+    @TerminalXAIBot- Search, track, and watch Pump.fun tokens. Watchlist alerts are delivered instantly to verified users.
+    @WhaleRadarPro_Bot- Tracks large wallet buys on Pump.fun in real-time.
+    @CloneSentryProBot- Detect tokens that copy popular coins or show scam patterns.
+    @VelocityPredictor_Bot- Analyze Pump.fun tokens in real-time and predict breakouts.
+    @Pumpwalletbb_Bot - Creates coins from telegram directly and publish it.
+    
+    There are lot of insider tools and access to verified community when you upgrade to premium or vip using @ElitePremiumPayBot... or click /pay
+    `;
+    await bot.sendMessage(chatId,trialmsg);
+
+
+});
+
+
+
+
 
 // /admin
 bot.onText(/\/admin/, async (msg) => {
