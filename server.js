@@ -17,10 +17,8 @@ app.get('/', (req, res) => {
 });
 
 
-app.post('/trigger-broadcast', async (req, res) => {
-  if (req.headers['x-broadcast-secret'] !== process.env.BROADCAST_SECRET) {
-    return res.status(401).end();
-  }
+app.get('/trigger-broadcast', async (req, res) => {
+  // Broadcast a message to the private community chat group
   try {
     await bot.sendMessage(
       "-1003766079811",
